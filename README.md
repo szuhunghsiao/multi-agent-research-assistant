@@ -3,7 +3,7 @@
 Use LangGraph to organize three LLM agents (Researcher / Writer / Critic) to auto-generate a research report
 Built-in revision loop: The Critic will check whether the draft is approved; if not, it will loop back to the Writer to rewrite until the maximum loop count is met or the report is approved.
 
-[![Open in Colab](https://colab.research.google.com/github/szuhunghsiao/multi-agent-research-assistant/blob/main/multi_agent_research_assistant.ipynb)]
+[Open in Colab](https://colab.research.google.com/github/szuhunghsiao/multi-agent-research-assistant/blob/main/multi_agent_research_assistant.ipynb)
 
 ## Design
 
