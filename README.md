@@ -1,5 +1,7 @@
 # Multi-Agent Research Assistant
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/szuhunghsiao/multi-agent-research-assistant/blob/main/multi_agent_research_assistant.ipynb)
+
 A LangGraph-coordinated research pipeline with three roles: an agentic Researcher
 that can autonomously decide when to search the web, a Writer that drafts the
 report, and a Critic that gates quality — sending drafts back for revision until
