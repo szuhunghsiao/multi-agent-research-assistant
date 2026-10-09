@@ -9,18 +9,20 @@ from app.schemas import JobCreated, JobView, ResearchRequest
 
 
 def create_app(graph: Any = None, workers: int | None = None,
-               max_queue: int | None = None) -> FastAPI:
+               max_queue: int | None = None, job_timeout_s: float | None = None) -> FastAPI:
     """App factory. Tests pass a fake graph; production builds the real one at startup."""
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        g, w, q = graph, workers, max_queue
+        g, w, q, t = graph, workers, max_queue, job_timeout_s
         if g is None:
             from app.config import get_settings
             from app.graph import build_default_graph
             s = get_settings()
-            g, w, q = build_default_graph(), w or s.workers, q or s.max_queue
-        app.state.jobs = JobManager(g, workers=w or 2, max_queue=q or 20)
+            g, w, q, t = (build_default_graph(), w or s.workers, q or s.max_queue,
+                          t or s.job_timeout_s)
+        app.state.jobs = JobManager(g, workers=w or 2, max_queue=q or 20,
+                                    job_timeout_s=t or 300.0)
         app.state.jobs.start()
         yield
         await app.state.jobs.stop()

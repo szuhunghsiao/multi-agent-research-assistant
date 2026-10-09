@@ -21,8 +21,10 @@ def _now() -> datetime:
 
 
 class JobManager:
-    def __init__(self, graph: Any, workers: int = 2, max_queue: int = 20):
+    def __init__(self, graph: Any, workers: int = 2, max_queue: int = 20,
+                 job_timeout_s: float = 300.0):
         self.graph = graph
+        self.job_timeout_s = job_timeout_s
         self.jobs: dict[str, JobView] = {}
         self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=max_queue)
         self.n_workers = workers
@@ -43,15 +45,21 @@ class JobManager:
 
     async def _run(self, job: JobView) -> None:
         job.status, job.started_at = JobStatus.running, _now()
+        deadline = asyncio.timeout(self.job_timeout_s)   # whole-job budget
         try:
-            final = await self.graph.ainvoke(initial_state(job.topic))
+            async with deadline:
+                final = await self.graph.ainvoke(initial_state(job.topic))
             job.result = ResearchResult(
                 draft=final["draft"], approved=final["approved"],
                 revision_count=final["revision_count"],
                 research_rounds=final["research_rounds"], critique=final["critique"])
             job.status = JobStatus.succeeded
         except Exception as e:  # CancelledError is BaseException -> not swallowed
-            job.status, job.error = JobStatus.failed, f"{type(e).__name__}: {e}"
+            if isinstance(e, TimeoutError) and deadline.expired():
+                job.error = f"JobTimeout: exceeded {self.job_timeout_s:g}s"
+            else:
+                job.error = f"{type(e).__name__}: {e}"
+            job.status = JobStatus.failed
         finally:
             job.finished_at = _now()
 

@@ -21,7 +21,7 @@ class Settings(BaseSettings):
     workers: int = 2          # concurrent graph runs (= concurrent LLM pressure)
     max_queue: int = 20       # pending jobs before POST returns 503
     retry_max_attempts: int = 4  # per LLM/search call, incl. the first try
-
+    job_timeout_s: float = 300.0  # whole-job deadline across all calls and retries
 
 @lru_cache
 def get_settings() -> Settings:
