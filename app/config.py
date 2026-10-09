@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     search_max_results: int = 3
     workers: int = 2          # concurrent graph runs (= concurrent LLM pressure)
     max_queue: int = 20       # pending jobs before POST returns 503
+    retry_max_attempts: int = 4  # per LLM/search call, incl. the first try
 
 
 @lru_cache

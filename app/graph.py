@@ -150,24 +150,33 @@ def build_graph(researcher_llm: Any, writer_llm: Any, critic_llm: Any, search: A
 
 
 def build_default_graph():
-    """Wire real Gemini + Tavily clients from Settings."""
+    """Wire real Gemini + Tavily clients from Settings, each wrapped with timeout + retry."""
     from langchain_google_genai import ChatGoogleGenerativeAI
     from langchain_tavily import TavilySearch
 
     from app.config import get_settings
+    from app.reliability import Resilient, RetryPolicy, TavilyAdapter
 
     s = get_settings()
+    # Outer per-attempt timeout slightly above the SDK's, so the SDK timeout fires first
+    # and wait_for is only a safety net for hangs the SDK doesn't catch.
+    policy = RetryPolicy(max_attempts=s.retry_max_attempts,
+                         attempt_timeout_s=s.llm_timeout_s + 5)
 
     def llm(key):
+        # max_retries=1 -> SDK HttpRetryOptions(attempts=1) = no SDK-level retry.
+        # Retries live in exactly one layer (Resilient) to avoid retry amplification.
         return ChatGoogleGenerativeAI(model=s.model_name, google_api_key=key.get_secret_value(),
                                       timeout=s.llm_timeout_s, max_retries=1)
 
-    search = TavilySearch(max_results=s.search_max_results,
-                          tavily_api_key=s.tavily_api_key.get_secret_value())
-    return build_graph(llm(s.researcher_api_key).bind_tools([search]),
-                       llm(s.writer_api_key), llm(s.critic_api_key), search,
-                       max_iterations=s.max_iterations, max_revisions=s.max_revisions)
-
+    tool = TavilySearch(max_results=s.search_max_results,
+                        tavily_api_key=s.tavily_api_key.get_secret_value())
+    return build_graph(
+        Resilient(llm(s.researcher_api_key).bind_tools([tool]), "researcher", policy),
+        Resilient(llm(s.writer_api_key), "writer", policy),
+        Resilient(llm(s.critic_api_key), "critic", policy),
+        Resilient(TavilyAdapter(tool), "tavily", policy),
+        max_iterations=s.max_iterations, max_revisions=s.max_revisions)
 
 if __name__ == "__main__":
     import asyncio
