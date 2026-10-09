@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     max_iterations: int = 3   # Researcher tool-calling rounds (safety net)
     max_revisions: int = 3    # Writer<->Critic revise loop cap
     search_max_results: int = 3
+    workers: int = 2          # concurrent graph runs (= concurrent LLM pressure)
+    max_queue: int = 20       # pending jobs before POST returns 503
 
 
 @lru_cache
