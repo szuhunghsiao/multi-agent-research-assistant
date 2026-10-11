@@ -6,6 +6,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 
 from app.jobs import JobManager, QueueFullError
 from app.schemas import JobCreated, JobView, ResearchRequest
+from app.observability import configure_logging
 
 
 def create_app(graph: Any = None, workers: int | None = None,
@@ -19,6 +20,7 @@ def create_app(graph: Any = None, workers: int | None = None,
             from app.config import get_settings
             from app.graph import build_default_graph
             s = get_settings()
+            configure_logging(s.log_level)            
             g, w, q, t = (build_default_graph(), w or s.workers, q or s.max_queue,
                           t or s.job_timeout_s)
         app.state.jobs = JobManager(g, workers=w or 2, max_queue=q or 20,

@@ -4,13 +4,17 @@ Single-process only. To scale horizontally, swap the queue for Redis/SQS and the
 store for Redis/Postgres; submit()/get() stay the same.
 """
 import asyncio
+import logging
 import uuid
 from datetime import datetime, timezone
 from typing import Any
 
 from app.graph import initial_state
+from app.observability import job_id_var
 from app.schemas import JobStatus, JobView, ResearchResult
 
+
+log = logging.getLogger(__name__)
 
 class QueueFullError(Exception):
     pass
@@ -38,13 +42,16 @@ class JobManager:
         except asyncio.QueueFull:
             raise QueueFullError from None
         self.jobs[job.job_id] = job
+        log.info("job_queued", extra={"job_id": job.job_id, "queue_depth": self.queue.qsize()})
         return job
 
     def get(self, job_id: str) -> JobView | None:
         return self.jobs.get(job_id)
 
     async def _run(self, job: JobView) -> None:
+        token = job_id_var.set(job.job_id)
         job.status, job.started_at = JobStatus.running, _now()
+        log.info("job_started")
         deadline = asyncio.timeout(self.job_timeout_s)   # whole-job budget
         try:
             async with deadline:
@@ -62,6 +69,12 @@ class JobManager:
             job.status = JobStatus.failed
         finally:
             job.finished_at = _now()
+            log.info("job_finished", extra={
+                "status": job.status.value, "error": job.error,
+                "duration_ms": round((job.finished_at - job.started_at).total_seconds() * 1000),
+                "approved": job.result.approved if job.result else None,
+                "revision_count": job.result.revision_count if job.result else None})
+            job_id_var.reset(token)
 
     async def _worker(self) -> None:
         while True:
