@@ -6,6 +6,7 @@ import asyncio
 import logging
 import random
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -62,21 +63,33 @@ class Resilient:
         self.inner, self.name, self.policy, self._sleep = inner, name, policy, sleep
 
     async def ainvoke(self, input: Any, **kwargs: Any) -> Any:
-        p = self.policy
-        for attempt in range(p.max_attempts):
+        p, t0 = self.policy, time.perf_counter()
+        for attempt in range(1, p.max_attempts + 1):
             try:
-                return await asyncio.wait_for(self.inner.ainvoke(input, **kwargs),
-                                              p.attempt_timeout_s)
+                result = await asyncio.wait_for(self.inner.ainvoke(input, **kwargs),
+                                                p.attempt_timeout_s)
             except Exception as e:
-                if attempt == p.max_attempts - 1 or not is_retryable(e):
-                    raise
                 hint = server_retry_delay(e)
-                if hint is not None and hint > p.max_delay_s:
-                    raise                      # server asks for longer than we tolerate
-                delay = max(p.backoff(attempt), hint or 0.0)
-                log.warning("retry %s: %s (attempt %d/%d, sleeping %.1fs)", self.name,
-                            type(e).__name__, attempt + 1, p.max_attempts, delay)
+                give_up = (attempt == p.max_attempts or not is_retryable(e)
+                           or (hint is not None and hint > p.max_delay_s))
+                if give_up:
+                    log.warning("call_failed", extra={
+                        "target": self.name, "attempts": attempt, "error": type(e).__name__,
+                        "retryable": is_retryable(e), "duration_ms": _ms_since(t0)})
+                    raise
+                delay = max(p.backoff(attempt - 1), hint or 0.0)
+                log.warning("call_retry", extra={
+                    "target": self.name, "attempt": attempt, "error": type(e).__name__,
+                    "sleep_s": round(delay, 2)})
                 await self._sleep(delay)
+            else:
+                log.info("call_finished", extra={
+                    "target": self.name, "attempts": attempt, "duration_ms": _ms_since(t0)})
+                return result
+
+
+def _ms_since(t0: float) -> int:
+    return round((time.perf_counter() - t0) * 1000)
 
 
 class TavilyAdapter:

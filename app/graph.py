@@ -1,9 +1,13 @@
 import json
+import logging
+import time
 from typing import Any, TypedDict
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 import ast
+
+log = logging.getLogger(__name__)
 
 class ResearchState(TypedDict):
   topic: str            # User input topic
@@ -83,6 +87,21 @@ def parse_verdict(text: str) -> tuple[bool, str]:
     first, _, rest = text.strip().partition("\n")
     return first.strip().upper().startswith("APPROVED"), rest.strip()
 
+def timed_node(name: str, fn):
+    """Log one `node_finished` event per node execution with its wall-clock duration."""
+    async def wrapper(state: ResearchState) -> dict:
+        t0, status = time.perf_counter(), "ok"
+        try:
+            return await fn(state)
+        except Exception:
+            status = "error"
+            raise
+        finally:
+            log.info("node_finished", extra={
+                "node": name, "status": status, "revision": state.get("revision_count", 0),
+                "duration_ms": round((time.perf_counter() - t0) * 1000)})
+    return wrapper
+
 def build_graph(researcher_llm: Any, writer_llm: Any, critic_llm: Any, search: Any,
                 max_iterations: int = 3, max_revisions: int = 3):
     """researcher_llm must already have the search tool bound (.bind_tools)."""
@@ -139,9 +158,9 @@ def build_graph(researcher_llm: Any, writer_llm: Any, critic_llm: Any, search: A
         return "revise"
 
     g = StateGraph(ResearchState)
-    g.add_node("researcher", researcher_node)
-    g.add_node("writer", writer_node)
-    g.add_node("critic", critic_node)
+    g.add_node("researcher", timed_node("researcher", researcher_node))
+    g.add_node("writer", timed_node("writer", writer_node))
+    g.add_node("critic", timed_node("critic", critic_node))
     g.add_edge(START, "researcher")
     g.add_edge("researcher", "writer")
     g.add_edge("writer", "critic")
