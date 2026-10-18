@@ -4,7 +4,7 @@ import pytest
 from langchain_core.exceptions import ModelAuthenticationError, ModelRateLimitError
 from langchain_core.tools import ToolException
 
-from app.reliability import Resilient, RetryableError, RetryPolicy, TavilyAdapter
+from app.reliability import RateLimiter, Resilient, RetryableError, RetryPolicy, TavilyAdapter
 from tests.fakes import FakeLLM
 
 POLICY = RetryPolicy(max_attempts=3, base_delay_s=1.0, max_delay_s=20.0, attempt_timeout_s=0.1)
@@ -93,3 +93,37 @@ async def test_tavily_401_is_not_retryable():
 async def test_tavily_no_results_is_empty_not_crash():
     out = await TavilyAdapter(FakeTool(ToolException("No search results found"))).ainvoke({"query": "q"})
     assert out["results"] == []
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    async def sleep(self, s):
+        self.now += s
+
+
+async def test_rate_limiter_blocks_until_window_slides():
+    clock = FakeClock()
+    lim = RateLimiter(max_calls=2, period_s=60, clock=clock, sleep=clock.sleep)
+    assert await lim.acquire() == 0
+    clock.now = 10
+    assert await lim.acquire() == 0
+    assert await lim.acquire() == 50      # waits until the first start (t=0) leaves the window
+    assert clock.now == 60
+
+
+async def test_limiter_is_shared_across_wrappers_and_counts_retries():
+    clock = FakeClock()
+    lim = RateLimiter(max_calls=2, period_s=60, clock=clock, sleep=clock.sleep)
+
+    async def no_sleep(_):
+        pass
+
+    a = Resilient(FakeLLM([ModelRateLimitError("429"), "ok"]), "writer", POLICY, sleep=no_sleep, limiter=lim)
+    b = Resilient(FakeLLM(["ok"]), "critic", POLICY, sleep=no_sleep, limiter=lim)
+    await a.ainvoke("x")   # 2 attempts -> uses both slots
+    await b.ainvoke("x")   # different wrapper, same limiter -> must wait for the window
+    assert clock.now == 60

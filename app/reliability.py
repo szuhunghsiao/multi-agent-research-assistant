@@ -3,6 +3,7 @@
 Wraps anything exposing `ainvoke()` so graph.py stays unaware of retry policy.
 """
 import asyncio
+import collections
 import logging
 import random
 import re
@@ -56,15 +57,48 @@ def server_retry_delay(exc: BaseException) -> float | None:
     m = _RETRY_DELAY.search(_text(exc))
     return float(m.group(1)) if m else None
 
+class RateLimiter:
+    """Client-side sliding-window limiter: at most `max_calls` call starts per `period`
+    seconds, shared by every wrapper that holds it. Proactive (avoid 429) rather than
+    reactive (retry after 429)."""
+
+    def __init__(self, max_calls: int, period_s: float = 60.0,
+                 clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep):
+        self.max_calls, self.period_s = max_calls, period_s
+        self._clock, self._sleep = clock, sleep
+        self._starts: collections.deque[float] = collections.deque()
+        self._lock = asyncio.Lock()      # FIFO: waiters are served in arrival order
+
+    async def acquire(self) -> float:
+        """Wait until a slot is free; return seconds waited."""
+        waited = 0.0
+        async with self._lock:
+            while True:
+                now = self._clock()
+                while self._starts and now - self._starts[0] >= self.period_s:
+                    self._starts.popleft()
+                if len(self._starts) < self.max_calls:
+                    self._starts.append(now)
+                    return waited
+                delay = self.period_s - (now - self._starts[0])
+                waited += delay
+                await self._sleep(delay)
 
 class Resilient:
     def __init__(self, inner: Any, name: str, policy: RetryPolicy = RetryPolicy(),
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep):
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 limiter: RateLimiter | None = None):
         self.inner, self.name, self.policy, self._sleep = inner, name, policy, sleep
-
+        self.limiter = limiter
     async def ainvoke(self, input: Any, **kwargs: Any) -> Any:
         p, t0 = self.policy, time.perf_counter()
         for attempt in range(1, p.max_attempts + 1):
+            if self.limiter is not None:          # every attempt, incl. retries, uses quota
+                waited = await self.limiter.acquire()
+                if waited > 0:
+                    log.info("rate_limit_wait", extra={"target": self.name,
+                                                       "waited_s": round(waited, 2)})
             try:
                 result = await asyncio.wait_for(self.inner.ainvoke(input, **kwargs),
                                                 p.attempt_timeout_s)

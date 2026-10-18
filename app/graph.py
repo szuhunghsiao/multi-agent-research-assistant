@@ -174,13 +174,17 @@ def build_default_graph():
     from langchain_tavily import TavilySearch
 
     from app.config import get_settings
-    from app.reliability import Resilient, RetryPolicy, TavilyAdapter
+    from app.reliability import RateLimiter, Resilient, RetryPolicy, TavilyAdapter
 
     s = get_settings()
     # Outer per-attempt timeout slightly above the SDK's, so the SDK timeout fires first
     # and wait_for is only a safety net for hangs the SDK doesn't catch.
     policy = RetryPolicy(max_attempts=s.retry_max_attempts,
                          attempt_timeout_s=s.llm_timeout_s + 5)
+
+    # Gemini free-tier quota is per project per model, shared by all three keys,
+    # so all three roles share ONE limiter.
+    gemini_limiter = RateLimiter(max_calls=s.gemini_rpm, period_s=60.0)
 
     def llm(key):
         # max_retries=1 -> SDK HttpRetryOptions(attempts=1) = no SDK-level retry.
@@ -191,9 +195,10 @@ def build_default_graph():
     tool = TavilySearch(max_results=s.search_max_results,
                         tavily_api_key=s.tavily_api_key.get_secret_value())
     return build_graph(
-        Resilient(llm(s.researcher_api_key).bind_tools([tool]), "researcher", policy),
-        Resilient(llm(s.writer_api_key), "writer", policy),
-        Resilient(llm(s.critic_api_key), "critic", policy),
+        Resilient(llm(s.researcher_api_key).bind_tools([tool]), "researcher", policy,
+                  limiter=gemini_limiter),
+        Resilient(llm(s.writer_api_key), "writer", policy, limiter=gemini_limiter),
+        Resilient(llm(s.critic_api_key), "critic", policy, limiter=gemini_limiter),
         Resilient(TavilyAdapter(tool), "tavily", policy),
         max_iterations=s.max_iterations, max_revisions=s.max_revisions)
 

@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     retry_max_attempts: int = 4  # per LLM/search call, incl. the first try
     job_timeout_s: float = 300.0  # whole-job deadline across all calls and retries
     log_level: str = "INFO"    
+    gemini_rpm: int = 14          # free tier is 15 RPM per project+model; keep 1 of headroom
 
 @lru_cache
 def get_settings() -> Settings:
