@@ -149,7 +149,11 @@ def build_graph(researcher_llm: Any, writer_llm: Any, critic_llm: Any, search: A
             "APPROVED or REVISE\n"
             "<your feedback; if APPROVED, briefly explain why>"
         )
-        approved, feedback = parse_verdict(extract_text(await critic_llm.ainvoke(prompt)))
+        text = extract_text(await critic_llm.ainvoke(prompt))
+        approved, feedback = parse_verdict(text)
+        log.info("critic_verdict", extra={
+            "revision": state["revision_count"], "approved": approved,
+            "verdict_line": text.strip().partition("\n")[0][:80]})
         return {"approved": approved, "critique": feedback}
 
     def route_after_critic(state: ResearchState) -> str:

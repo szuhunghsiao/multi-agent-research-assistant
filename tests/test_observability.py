@@ -78,3 +78,12 @@ async def test_retry_and_success_are_logged_with_target(caplog):
     events = [(rec.getMessage(), rec.target) for rec in caplog.records if hasattr(rec, "target")]
     assert events == [("call_retry", "writer"), ("call_finished", "writer")]
     assert [rec.attempts for rec in caplog.records if rec.getMessage() == "call_finished"] == [2]
+
+async def test_critic_raw_verdict_line_is_logged(caplog):
+    caplog.set_level(logging.INFO)
+    graph = build_graph(FakeLLM(["done"]), FakeLLM(["v1"]),
+                        FakeLLM(["**APPROVED**\nLooks good."]), FakeSearch(), max_revisions=0)
+    await graph.ainvoke({"topic": "t", "research_notes": "", "research_rounds": 0, "draft": "",
+                         "critique": "", "revision_count": 0, "approved": False})
+    [rec] = [r for r in caplog.records if r.getMessage() == "critic_verdict"]
+    assert rec.verdict_line == "**APPROVED**"
