@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 import pytest
 from langchain_core.exceptions import ModelAuthenticationError, ModelRateLimitError
@@ -127,3 +128,21 @@ async def test_limiter_is_shared_across_wrappers_and_counts_retries():
     await a.ainvoke("x")   # 2 attempts -> uses both slots
     await b.ainvoke("x")   # different wrapper, same limiter -> must wait for the window
     assert clock.now == 60
+
+async def test_server_delay_above_backoff_cap_is_still_honored(caplog):
+    caplog.set_level(logging.INFO)
+    r, inner, slept = make([ModelRateLimitError('429 "retryDelay": "38s"'), "ok"])
+    assert (await r.ainvoke("x")).content == "ok"
+    assert len(inner.calls) == 2 and slept[0] >= 38.0
+    [retry] = [x for x in caplog.records if x.getMessage() == "call_retry"]
+    assert retry.server_delay_s == 38.0
+
+
+async def test_server_delay_beyond_tolerance_gives_up_and_logs_why(caplog):
+    caplog.set_level(logging.INFO)
+    r, inner, slept = make([ModelRateLimitError('429 "retryDelay": "120s"')])
+    with pytest.raises(ModelRateLimitError):
+        await r.ainvoke("x")
+    assert len(inner.calls) == 1 and slept == []
+    [failed] = [x for x in caplog.records if x.getMessage() == "call_failed"]
+    assert failed.server_delay_s == 120.0 and failed.retryable is True

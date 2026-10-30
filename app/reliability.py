@@ -29,13 +29,13 @@ class RetryableError(Exception):
 class RetryPolicy:
     max_attempts: int = 4
     base_delay_s: float = 1.0
-    max_delay_s: float = 20.0
+    max_delay_s: float = 20.0          # cap on OUR backoff between attempts
     attempt_timeout_s: float = 30.0
+    max_server_delay_s: float = 60.0   # longest server-requested wait (429 retryDelay) we honor
 
     def backoff(self, attempt: int) -> float:
         """Full jitter: uniform(0, min(cap, base * 2**attempt))."""
         return random.uniform(0, min(self.max_delay_s, self.base_delay_s * 2 ** attempt))
-
 
 def _text(exc: BaseException) -> str:
     return f"{exc} {exc.__cause__ or ''}"
@@ -105,16 +105,17 @@ class Resilient:
             except Exception as e:
                 hint = server_retry_delay(e)
                 give_up = (attempt == p.max_attempts or not is_retryable(e)
-                           or (hint is not None and hint > p.max_delay_s))
+                           or (hint is not None and hint > p.max_server_delay_s))
                 if give_up:
                     log.warning("call_failed", extra={
                         "target": self.name, "attempts": attempt, "error": type(e).__name__,
-                        "retryable": is_retryable(e), "duration_ms": _ms_since(t0)})
+                        "retryable": is_retryable(e), "server_delay_s": hint,
+                        "duration_ms": _ms_since(t0)})
                     raise
                 delay = max(p.backoff(attempt - 1), hint or 0.0)
                 log.warning("call_retry", extra={
                     "target": self.name, "attempt": attempt, "error": type(e).__name__,
-                    "sleep_s": round(delay, 2)})
+                    "server_delay_s": hint, "sleep_s": round(delay, 2)})
                 await self._sleep(delay)
             else:
                 log.info("call_finished", extra={
