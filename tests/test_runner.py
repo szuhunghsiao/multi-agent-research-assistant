@@ -2,7 +2,7 @@ import asyncio
 import logging
 
 from evals.checks import Case
-from evals.runner import percentile, run_eval
+from evals.runner import compare, percentile, run_eval
 
 
 class FakeGraph:
@@ -66,3 +66,27 @@ def test_percentile_nearest_rank():
     assert percentile(xs, 50) == 50
     assert percentile(xs, 95) == 100
     assert percentile([], 50) is None
+
+def test_compare_allows_one_case_flip_but_catches_more():
+    base = {"pass_rate": 0.8, "avg_llm_calls": 6.0, "latency_p95_s": 30.0, "errors": 0}
+    ok = {"pass_rate": 0.6, "avg_llm_calls": 7.0, "latency_p95_s": 31.0, "errors": 0}
+    assert compare(ok, base, n_cases=5) == ([], [])            # 0.2 drop = exactly one case
+
+    bad = {"pass_rate": 0.4, "avg_llm_calls": 9.0, "latency_p95_s": 60.0, "errors": 1}
+    failures, warnings = compare(bad, base, n_cases=5)
+    assert len(failures) == 3                                    # errors, pass_rate, cost
+    assert len(warnings) == 1                                    # latency only warns
+
+
+async def test_critic_format_violations_are_counted():
+    class VerdictGraph:
+        async def ainvoke(self, state):
+            log = logging.getLogger("app.graph")
+            log.info("critic_verdict", extra={"verdict_line": "**APPROVED**", "approved": False, "revision": 0})
+            log.info("critic_verdict", extra={"verdict_line": "APPROVED", "approved": True, "revision": 1})
+            return {**state, "draft": "d", "approved": True, "revision_count": 1, "research_rounds": 0}
+
+    results, s = await run_eval(VerdictGraph(), [case("v1", "V")])
+    assert results[0].critic_verdicts == 2 and results[0].critic_format_violations == 1
+    assert s["critic_format_violation_rate"] == 0.5
+    assert s["revisions_histogram"] == {1: 1}
