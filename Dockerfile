@@ -17,7 +17,7 @@ RUN pip install -r requirements.lock
 
 # ---------- test: dev deps + unit tests  (docker build --target test .) ----------
 FROM builder AS test
-COPY requirements-dev.txt .
+COPY requirements.txt requirements-dev.txt ./
 RUN pip install -r requirements-dev.txt
 COPY . .
 RUN pytest -q
