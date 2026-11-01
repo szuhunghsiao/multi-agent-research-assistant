@@ -1,0 +1,15 @@
+.git
+.env
+.env.*
+!.env.example
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ipynb_checkpoints
+*.ipynb
+experiments/
+logs/
+evals/results/
+venv/
+.venv/
+.DS_Store
