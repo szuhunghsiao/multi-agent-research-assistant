@@ -12,8 +12,8 @@ WORKDIR /app
 FROM base AS builder
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-COPY requirements.txt .
-RUN pip install -r requirements.txt
+COPY requirements.lock .
+RUN pip install -r requirements.lock
 
 # ---------- test: dev deps + unit tests  (docker build --target test .) ----------
 FROM builder AS test

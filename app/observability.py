@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 job_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar("job_id", default=None)
 
 # Attributes every LogRecord has; anything else came from `extra=` and is ours to emit.
-_STD_ATTRS = set(vars(logging.LogRecord("", 0, "", 0, "", None, None))) | {"message", "asctime", "taskName"}
+_STD_ATTRS = set(vars(logging.LogRecord("", 0, "", 0, "", None, None))) | {"message", "asctime", "taskName", "color_message"}
 
 
 class JsonFormatter(logging.Formatter):
