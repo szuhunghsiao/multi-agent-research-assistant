@@ -7,7 +7,7 @@
 .pytest_cache
 .ipynb_checkpoints
 *.ipynb
-experiments/
+prototype/
 logs/
 evals/results/
 venv/
