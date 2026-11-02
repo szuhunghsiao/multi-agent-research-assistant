@@ -1,0 +1,14 @@
+services:
+  api:
+    build:
+      context: .
+      target: runtime
+    image: research-assistant:latest
+    env_file: .env                 # keys injected at runtime, never baked into the image
+    environment:
+      LOG_LEVEL: INFO
+      WORKERS: "1"                 # free tier: 15 RPM shared across all keys
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    stop_grace_period: 30s

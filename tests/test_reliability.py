@@ -1,0 +1,148 @@
+import asyncio
+import logging
+
+import pytest
+from langchain_core.exceptions import ModelAuthenticationError, ModelRateLimitError
+from langchain_core.tools import ToolException
+
+from app.reliability import RateLimiter, Resilient, RetryableError, RetryPolicy, TavilyAdapter
+from tests.fakes import FakeLLM
+
+POLICY = RetryPolicy(max_attempts=3, base_delay_s=1.0, max_delay_s=20.0, attempt_timeout_s=0.1)
+
+
+def make(replies, policy=POLICY):
+    slept: list[float] = []
+
+    async def fake_sleep(s):
+        slept.append(s)
+
+    inner = FakeLLM(replies)
+    return Resilient(inner, "test", policy, sleep=fake_sleep), inner, slept
+
+
+async def test_429_is_retried_then_succeeds():
+    r, inner, slept = make([ModelRateLimitError("429"), "ok"])
+    assert (await r.ainvoke("x")).content == "ok"
+    assert len(inner.calls) == 2 and len(slept) == 1
+
+
+async def test_non_retryable_fails_fast():
+    r, inner, slept = make([ModelAuthenticationError("401 bad key")])
+    with pytest.raises(ModelAuthenticationError):
+        await r.ainvoke("x")
+    assert len(inner.calls) == 1 and slept == []
+
+
+async def test_gives_up_after_max_attempts():
+    r, inner, slept = make([ModelRateLimitError("429")] * 5)
+    with pytest.raises(ModelRateLimitError):
+        await r.ainvoke("x")
+    assert len(inner.calls) == 3 and len(slept) == 2
+
+
+async def test_server_retry_delay_is_respected():
+    r, _, slept = make([ModelRateLimitError('429 "retryDelay": "7s"'), "ok"])
+    await r.ainvoke("x")
+    assert slept[0] >= 7.0
+
+
+async def test_daily_quota_is_not_retried():
+    r, inner, _ = make([ModelRateLimitError("429 GenerateRequestsPerDayPerProjectPerModel")])
+    with pytest.raises(ModelRateLimitError):
+        await r.ainvoke("x")
+    assert len(inner.calls) == 1
+
+
+async def test_hung_call_times_out_and_is_retried():
+    class Hangs:
+        calls = 0
+        async def ainvoke(self, _):
+            self.calls += 1
+            if self.calls == 1:
+                await asyncio.sleep(10)
+            return "ok"
+
+    async def no_sleep(_):
+        pass
+
+    inner = Hangs()
+    assert await Resilient(inner, "t", POLICY, sleep=no_sleep).ainvoke("x") == "ok"
+    assert inner.calls == 2
+
+
+class FakeTool:
+    def __init__(self, outcome):
+        self.outcome = outcome
+
+    async def ainvoke(self, args, **_):
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
+
+
+async def test_tavily_429_becomes_retryable():
+    with pytest.raises(RetryableError):
+        await TavilyAdapter(FakeTool({"error": Exception("Error 429: Too Many Requests")})).ainvoke({"query": "q"})
+
+
+async def test_tavily_401_is_not_retryable():
+    with pytest.raises(RuntimeError):
+        await TavilyAdapter(FakeTool({"error": Exception("Error 401: Unauthorized")})).ainvoke({"query": "q"})
+
+
+async def test_tavily_no_results_is_empty_not_crash():
+    out = await TavilyAdapter(FakeTool(ToolException("No search results found"))).ainvoke({"query": "q"})
+    assert out["results"] == []
+
+class FakeClock:
+    def __init__(self):
+        self.now = 0.0
+
+    def __call__(self):
+        return self.now
+
+    async def sleep(self, s):
+        self.now += s
+
+
+async def test_rate_limiter_blocks_until_window_slides():
+    clock = FakeClock()
+    lim = RateLimiter(max_calls=2, period_s=60, clock=clock, sleep=clock.sleep)
+    assert await lim.acquire() == 0
+    clock.now = 10
+    assert await lim.acquire() == 0
+    assert await lim.acquire() == 50      # waits until the first start (t=0) leaves the window
+    assert clock.now == 60
+
+
+async def test_limiter_is_shared_across_wrappers_and_counts_retries():
+    clock = FakeClock()
+    lim = RateLimiter(max_calls=2, period_s=60, clock=clock, sleep=clock.sleep)
+
+    async def no_sleep(_):
+        pass
+
+    a = Resilient(FakeLLM([ModelRateLimitError("429"), "ok"]), "writer", POLICY, sleep=no_sleep, limiter=lim)
+    b = Resilient(FakeLLM(["ok"]), "critic", POLICY, sleep=no_sleep, limiter=lim)
+    await a.ainvoke("x")   # 2 attempts -> uses both slots
+    await b.ainvoke("x")   # different wrapper, same limiter -> must wait for the window
+    assert clock.now == 60
+
+async def test_server_delay_above_backoff_cap_is_still_honored(caplog):
+    caplog.set_level(logging.INFO)
+    r, inner, slept = make([ModelRateLimitError('429 "retryDelay": "38s"'), "ok"])
+    assert (await r.ainvoke("x")).content == "ok"
+    assert len(inner.calls) == 2 and slept[0] >= 38.0
+    [retry] = [x for x in caplog.records if x.getMessage() == "call_retry"]
+    assert retry.server_delay_s == 38.0
+
+
+async def test_server_delay_beyond_tolerance_gives_up_and_logs_why(caplog):
+    caplog.set_level(logging.INFO)
+    r, inner, slept = make([ModelRateLimitError('429 "retryDelay": "120s"')])
+    with pytest.raises(ModelRateLimitError):
+        await r.ainvoke("x")
+    assert len(inner.calls) == 1 and slept == []
+    [failed] = [x for x in caplog.records if x.getMessage() == "call_failed"]
+    assert failed.server_delay_s == 120.0 and failed.retryable is True
