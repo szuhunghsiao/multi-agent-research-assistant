@@ -1,8 +1,10 @@
+import logging
+
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
-from app.graph import build_graph, initial_state, parse_verdict
+from app.graph import build_graph, extract_research_notes, initial_state, parse_verdict
 from tests.fakes import FakeLLM, FakeSearch, tool_call
-
 
 def make(researcher, writer, critic, search=None, **kw):
     return build_graph(researcher, writer, critic, search or FakeSearch(), **kw)
@@ -66,3 +68,23 @@ async def test_researcher_stops_at_max_iterations():
 
     assert final["research_rounds"] == 2
     assert len(researcher.calls) == 2
+
+def test_notes_fall_back_to_researcher_answer_when_no_search():
+    msgs = [SystemMessage("s"), HumanMessage("q"),
+            AIMessage("Kafka is a distributed log; RabbitMQ is a broker.")]
+    assert extract_research_notes(msgs) == "Kafka is a distributed log; RabbitMQ is a broker."
+    assert extract_research_notes([SystemMessage("s"), HumanMessage("q")]) == ""
+
+
+async def test_writer_receives_direct_answer_when_researcher_skips_search(caplog):
+    caplog.set_level(logging.INFO)
+    writer = FakeLLM(["draft"])
+    graph = make(FakeLLM(["Kafka is a log; RabbitMQ is a broker."]), writer,
+                 FakeLLM(["APPROVED"]))
+
+    final = await graph.ainvoke(initial_state("Kafka vs RabbitMQ"))
+
+    assert final["research_rounds"] == 0
+    assert "Kafka is a log; RabbitMQ is a broker." in writer.calls[0]
+    [rec] = [r for r in caplog.records if r.getMessage() == "research_done"]
+    assert rec.notes_source == "direct_answer" and rec.notes_chars > 0

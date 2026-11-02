@@ -3,7 +3,7 @@ import logging
 import time
 from typing import Any, TypedDict
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langgraph.graph import END, START, StateGraph
 import ast
 
@@ -47,32 +47,24 @@ def extract_text(response) -> str:
   return str(content)
 
 def extract_research_notes(messages: list) -> str:
-    """
-    Extract all ToolMessage's search result from researcher_loop returns message.
-    Only keep title and content with plain text for Writer.
-    """
-    notes_parts = []
-
+    """Flatten Tavily results into '[title] content' paragraphs.
+    If the Researcher answered without searching, use its final answer as the notes."""
+    parts = []
     for msg in messages:
         if not isinstance(msg, ToolMessage):
             continue
-
-        raw = msg.content
-        # ToolMessage.content is Tavily return dict.
         try:
-            data = ast.literal_eval(raw) if isinstance(raw, str) else raw
-        except Exception:
-            # If extract fail, it will be kept as plain text
-            notes_parts.append(str(raw))
+            data = json.loads(msg.content)
+        except (TypeError, json.JSONDecodeError):
+            parts.append(str(msg.content))
             continue
-
-        results = data.get("results", [])
-        for r in results:
-            title = r.get("title", "")
-            content = r.get("content", "")
-            notes_parts.append(f"[{title}] {content}")
-
-    return "\n\n".join(notes_parts)
+        for r in data.get("results", []):
+            parts.append(f"[{r.get('title', '')}] {r.get('content', '')}")
+    if parts:
+        return "\n\n".join(parts)
+    final = next((m for m in reversed(messages)
+                  if isinstance(m, AIMessage) and not m.tool_calls), None)
+    return extract_text(final).strip() if final else ""
 
 def count_research_rounds(messages: list) -> int:
     """
@@ -121,8 +113,11 @@ def build_graph(researcher_llm: Any, writer_llm: Any, critic_llm: Any, search: A
 
     async def researcher_node(state: ResearchState) -> dict:
         messages = await researcher_loop(state["topic"])
-        return {"research_notes": extract_research_notes(messages),
-                "research_rounds": count_research_rounds(messages)}
+        notes, rounds = extract_research_notes(messages), count_research_rounds(messages)
+        log.info("research_done", extra={
+            "research_rounds": rounds, "notes_chars": len(notes),
+            "notes_source": "search" if rounds else "direct_answer"})
+        return {"research_notes": notes, "research_rounds": rounds}
 
     async def writer_node(state: ResearchState) -> dict:
         if state.get("critique"):
