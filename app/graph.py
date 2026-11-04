@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import time
@@ -85,6 +86,9 @@ def timed_node(name: str, fn):
         t0, status = time.perf_counter(), "ok"
         try:
             return await fn(state)
+        except asyncio.CancelledError:
+            status = "cancelled"
+            raise
         except Exception:
             status = "error"
             raise
