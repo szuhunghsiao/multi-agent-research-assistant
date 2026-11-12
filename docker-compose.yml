@@ -12,3 +12,17 @@ services:
       - "8000:8000"
     restart: unless-stopped
     stop_grace_period: 30s
+
+  ui:
+    build:
+      context: .
+      dockerfile: ui/Dockerfile
+    image: research-assistant-ui:latest
+    environment:
+      API_URL: http://api:8000      # service name, not localhost
+    ports:
+      - "7860:7860"
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
