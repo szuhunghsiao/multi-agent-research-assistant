@@ -10,7 +10,8 @@ The project started as a [Colab prototype](prototype/) and was refactored into a
 
 ```mermaid
 flowchart LR
-    C[Client] -- "POST /research → 202 + job_id" --> API[FastAPI]
+    U[Gradio UI<br/>separate container] -- HTTP --> API
+    C[Client / curl / eval] -- "POST /research → 202 + job_id" --> API[FastAPI]
     C -- "GET /research/{id}" --> API
     API -- "bounded asyncio.Queue<br/>(503 when full)" --> W[N workers]
     W --> G
@@ -33,8 +34,10 @@ Every outbound call goes through one reliability layer: a shared client-side **r
 ```bash
 cp .env.example .env        # add your Gemini and Tavily keys
 docker compose up -d --build
-open http://localhost:8000/docs
+open http://localhost:7860          # web UI
+open http://localhost:8000/docs     # API docs (Swagger)
 ```
+The web UI is a separate container and a plain client of the HTTP API (submit → 202 → poll); it holds no API keys.
 
 Keys are injected at runtime through environment variables and are never baked into the image. The image runs as a non-root user, and the unit tests run during `docker build --target test`.
 
@@ -173,4 +176,5 @@ tests/        unit and component tests (fake LLMs, no keys)
 evals/        golden dataset, grader, runner, baseline
 prototype/    original Colab notebook (history only)
 Dockerfile, docker-compose.yml, requirements.lock
+ui/           Gradio front end (separate container, API client only)
 ```

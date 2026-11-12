@@ -1,6 +1,8 @@
 import io
 import json
 import logging
+import asyncio
+import pytest
 
 from langchain_core.exceptions import ModelRateLimitError
 
@@ -87,3 +89,19 @@ async def test_critic_raw_verdict_line_is_logged(caplog):
                          "critique": "", "revision_count": 0, "approved": False})
     [rec] = [r for r in caplog.records if r.getMessage() == "critic_verdict"]
     assert rec.verdict_line == "**APPROVED**"
+
+async def test_node_cut_off_by_deadline_is_logged_as_cancelled(caplog):
+    caplog.set_level(logging.INFO)
+
+    class SlowLLM:
+        async def ainvoke(self, *_args, **_kwargs):
+            await asyncio.sleep(10)
+
+    graph = build_graph(FakeLLM(["done"]), SlowLLM(), FakeLLM(["APPROVED"]), FakeSearch())
+    with pytest.raises(TimeoutError):
+        async with asyncio.timeout(0.05):
+            await graph.ainvoke({"topic": "t", "research_notes": "", "research_rounds": 0, "draft": "",
+                                 "critique": "", "revision_count": 0, "approved": False})
+
+    [rec] = [r for r in caplog.records if r.getMessage() == "node_finished" and r.node == "writer"]
+    assert rec.status == "cancelled"
